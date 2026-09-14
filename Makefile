@@ -13,7 +13,7 @@
 ROOT          := $(CURDIR)
 # Our fork: adds the web preview-job fix (forge-play-studio/blender@web-preview-fix).
 BLENDER_URL   := https://github.com/forge-play-studio/blender
-BLENDER_REF   := 43724ddb03ee3a0336e0e72c317e99c60549811f
+BLENDER_REF   := 3f25e95f290e49daf1553704ac07d1713123786f
 # NOTE: ':=' (not '?=') so a stale exported EMSDK in the environment cannot
 # point us at the wrong tree. Command-line `make EMSDK=...` still overrides.
 EMSDK         := $(ROOT)/emsdk

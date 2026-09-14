@@ -364,7 +364,14 @@ const scan = (t) => {
   }
 };
 const canvas = document.getElementById("canvas");
+/* Only until Blender starts. GHOST owns the backing store from then on (it
+ * sizes it in device pixels for HiDPI), and the canvas has been handed to the
+ * render thread with transferControlToOffscreen(), so touching width/height
+ * here would throw InvalidStateError on every window resize. */
 const fitCanvas = () => {
+  if (canvas.controlTransferredOffscreen) {
+    return;
+  }
   if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
