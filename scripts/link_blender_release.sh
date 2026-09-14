@@ -107,9 +107,22 @@ cmd=${cmd//-sNODERAWFS=1/}
 #    views into the one decompressed buffer, materialized on open.
 WASMFS_INC="$ROOT/emsdk/upstream/emscripten/system/lib/wasmfs"
 
+# Libraries the objects reference but the reused CMake link line does not carry.
+# Everything here was an "undefined symbol" warning that -sERROR_ON_UNDEFINED_SYMBOLS=0
+# let through, so it linked cleanly and then aborted at runtime with
+# "missing function: BrotliDecoderDecompress" on the very first datafile read.
+#   * brotli  — Blender's own compressed datafile reader (static lib in the sysroot)
+#   * zlib / bzip2 / sqlite3 — emscripten PORTS. CPython was configured with
+#     -sUSE_ZLIB/-sUSE_BZIP2/-sUSE_SQLITE3, and a port is only linked when the
+#     flag is on the FINAL link too, not just on the objects that need it.
+# (The wgpu* warnings are benign: emdawnwebgpu supplies those from JS.)
+MISSING_LIBS="-L$ROOT/wasm-sysroot/lib -lbrotlidec -lbrotlicommon \
+  -sUSE_ZLIB=1 -sUSE_BZIP2=1 -sUSE_SQLITE3=1"
+
 WEB_FLAGS="-pthread \
   -sEXIT_RUNTIME=0 -g2 \
   -O1 \
+  $MISSING_LIBS \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=1073741824 -sMAXIMUM_MEMORY=4294967296 \
   -sSTACK_SIZE=16777216 -sDEFAULT_PTHREAD_STACK_SIZE=4194304 \
   -sPTHREAD_POOL_SIZE=32 -sPTHREAD_POOL_SIZE_STRICT=0 \
@@ -123,7 +136,26 @@ WEB_FLAGS="-pthread \
   -sENVIRONMENT=web,worker -sASSERTIONS=1 -sERROR_ON_UNDEFINED_SYMBOLS=0"
 
 echo ">> relinking blender → $OUT/blender.js (release, no preload)"
-( cd "$BUILD" && eval "$cmd $WEB_FLAGS" )
+LINK_LOG=$(mktemp)
+( cd "$BUILD" && eval "$cmd $WEB_FLAGS" ) 2>&1 | tee "$LINK_LOG"
+test "${PIPESTATUS[0]}" -eq 0 || { echo "!! link failed"; exit 1; }
+
+# The link runs with -sERROR_ON_UNDEFINED_SYMBOLS=0, so a missing library is a
+# WARNING here and an abort in the browser hours later ("missing function: X").
+# Fail the build instead, for everything that is not legitimately supplied by JS.
+#   wgpu*/emscripten_webgpu_* — emdawnwebgpu's JS bindings
+#   wasmfs_*                  — the demo backends, compiled into this very link
+BENIGN='^(wgpu|emscripten_webgpu_|wasmfs_)'
+UNRESOLVED=$(grep -oE "undefined symbol: [A-Za-z0-9_]+" "$LINK_LOG" \
+  | sed 's/undefined symbol: //' | sort -u | grep -vE "$BENIGN" || true)
+rm -f "$LINK_LOG"
+if [ -n "$UNRESOLVED" ]; then
+  echo "!! the link left symbols unresolved that nothing will supply at runtime:"
+  echo "$UNRESOLVED" | sed 's/^/     /'
+  echo "!! add the library they come from to MISSING_LIBS above."
+  exit 1
+fi
+echo ">> no unresolved symbols beyond the JS-supplied ones"
 
 echo ">> blender.wasm.zst (zstd --ultra -21 -T0)"
 zstd -f --ultra -21 -T0 "$OUT/blender.wasm" -o "$OUT/blender.wasm.zst"
