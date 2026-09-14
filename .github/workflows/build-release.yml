@@ -40,6 +40,11 @@ env:
   # The Makefile pins the same version (EMSDK_VERSION); keep them in sync.
   EMSDK_VERSION: '6.0.1'
   MACH_NO_TERMINAL_FOOTER: '1'
+  # emcc honours EM_COMPILER_WRAPPER, so every dep object AND every Blender
+  # object goes through ccache. Combined with the cache steps below this is
+  # what turns a source-only change from a ~2 h rebuild into minutes.
+  EM_COMPILER_WRAPPER: 'ccache'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:
   build:
@@ -93,7 +98,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3 python3-venv pkg-config \
             git wget curl zstd rsync patch autoconf automake libtool bison flex \
-            gettext unzip ca-certificates
+            gettext unzip ca-certificates ccache
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -123,6 +128,35 @@ jobs:
       # Fetches the Blender fork, builds the whole wasm dependency stack (CPython,
       # OIIO, OpenEXR, TBB, Tint/SPIRV/shaderc, …), stages assets, builds the
       # native shader tool, and runs the CMake configure for build-blender/.
+      # The dependency stack is ~47 min from cold and changes almost never.
+      # restore-keys means a near-miss still restores: build_all_deps.sh stamps
+      # each dep with the hash of its own recipe, so only the recipes that
+      # actually changed are rebuilt on top of whatever was restored.
+      - name: Cache the wasm dependency sysroot
+        uses: actions/cache@v4
+        with:
+          path: |
+            wasm-sysroot
+            deps/downloads
+          key: wasm-sysroot-${{ runner.os }}-${{ hashFiles('scripts/build_*.sh', 'scripts/dep_common.sh') }}
+          restore-keys: |
+            wasm-sysroot-${{ runner.os }}-
+
+      - name: Cache ccache (objects for deps + Blender)
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Prime ccache
+        run: |
+          ccache --version | head -1
+          ccache --max-size=5G
+          ccache --zero-stats
+          ccache --show-stats | head -5
+
       - name: Build dependencies + configure Blender (long)
         run: |
           ulimit -s unlimited || ulimit -s 524288 || true
@@ -144,6 +178,9 @@ jobs:
           test -f build-blender/lib/libbf_gpu.a
           test -f build-blender/lib/libbf_blenkernel.a
           echo ">> object/library build complete (standalone exe link skipped)"
+          # Hit rate is the whole point of the cache steps -- print it so a
+          # regression (0 hits after a trivial change) is visible in the log.
+          ccache --show-stats | head -8
 
       # Release link: no --preload-file; emits demo/public/{blender.wasm.zst,
       # assets.tar.zst, blender.js, manifest.json, wgsl-cache.json}. Compiles the
