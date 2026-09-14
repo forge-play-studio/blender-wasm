@@ -38,12 +38,21 @@ mkdir -p "$DL" "$SRC" "$BLD" "$SYSROOT"
 # output must not pollute that captured value.
 log() { echo ">> [$(basename "${0%.sh}")] $*" >&2; }
 
-# fetch_extract <url> <tarball-name> <expected-extracted-dirname>
+# fetch_extract <url...> <tarball-name> <expected-extracted-dirname>
+# The first argument may hold several whitespace-separated mirrors; they are
+# tried in order. Upstream project hosts go down (savannah returned 502 for
+# hours and took the whole build with it), so every dep that has a second
+# source should list one.
 fetch_extract() {
-  local url="$1" file="$2" dir="$3"
+  local urls="$1" file="$2" dir="$3"
   if [ ! -f "$DL/$file" ]; then
     log "downloading $file"
-    curl -fL --retry 3 -o "$DL/$file.tmp" "$url"
+    local url ok=
+    for url in $urls; do
+      if curl -fL --retry 3 -o "$DL/$file.tmp" "$url"; then ok=1; break; fi
+      log "mirror failed, trying the next one: $url"
+    done
+    [ -n "$ok" ] || { log "every mirror failed for $file"; return 1; }
     mv "$DL/$file.tmp" "$DL/$file"
   fi
   if [ ! -d "$SRC/$dir" ]; then
