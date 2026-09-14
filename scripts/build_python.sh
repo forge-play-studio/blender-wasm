@@ -9,6 +9,27 @@ PYSRC=$(fetch_extract \
   "https://www.python.org/ftp/python/3.13.13/Python-3.13.13.tar.xz" \
   "Python-3.13.13.tar.xz" "Python-3.13.13")
 
+# CPython vendors its own copy of expat and renames its symbols to PyExpat_* via
+# Modules/expat/pyexpatns.h, so that libpython can coexist with a standalone
+# libexpat (which OpenColorIO pulls in). That header has not kept up with expat:
+# two internal globals added in expat 2.6 are NOT in its rename list, so both
+# copies export them and the final Blender link dies with
+#   wasm-ld: error: duplicate symbol: g_reparseDeferralEnabledDefault
+#   wasm-ld: error: duplicate symbol: _INTERNAL_trim_to_complete_utf8_characters
+# Finish the rename the header started. Idempotent: fetch_extract reuses an
+# already-extracted tree, so guard on our own marker.
+_pyns="$PYSRC/Modules/expat/pyexpatns.h"
+if [ -f "$_pyns" ] && ! grep -q "forge-play expat symbol collision" "$_pyns"; then
+  cat >>"$_pyns" <<'EXPATNS'
+
+/* forge-play expat symbol collision: internals expat 2.6+ exports that
+ * CPython's rename list predates. Without these they clash with libexpat.a. */
+#define g_reparseDeferralEnabledDefault PyExpat_g_reparseDeferralEnabledDefault
+#define _INTERNAL_trim_to_complete_utf8_characters PyExpat__INTERNAL_trim_to_complete_utf8_characters
+EXPATNS
+  log "patched pyexpatns.h (expat internal symbol collision)"
+fi
+
 # 1) Native build-python (host interpreter used by the cross-build).
 NATIVE="$BLD/python-native"
 # Must be a COMPLETE build (incl. extension modules like binascii) — the wasm
