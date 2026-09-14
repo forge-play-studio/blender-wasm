@@ -6,10 +6,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SC="${SC:-/tmp/blender-wasm-deplogs}"; mkdir -p "$SC"
 
+# Stamps make this properly incremental, which is what lets CI cache the
+# sysroot: a dep whose recipe has not changed is not rebuilt. The stamp is the
+# hash of its own build script plus dep_common.sh (the shared ABI flags live
+# there, so touching it must rebuild everything). DEPS_FORCE=1 ignores stamps.
+STAMPS="${SYSROOT:-$PWD/wasm-sysroot}/.stamps"; mkdir -p "$STAMPS"
+dep_hash() { cat "scripts/build_$1.sh" scripts/dep_common.sh | sha256sum | cut -d' ' -f1; }
+dep_is_current() {
+  [ -z "${DEPS_FORCE:-}" ] || return 1
+  [ -f "$STAMPS/$1" ] && [ "$(cat "$STAMPS/$1")" = "$(dep_hash "$1")" ]
+}
+
 wave() {  # wave <name> <script...>
   local name="$1"; shift
   echo "==== wave: $name ===="
-  local pids=() s
+  local pids=() s todo=()
+  for s in "$@"; do
+    if dep_is_current "$s"; then echo "  skip $s (cached)"; else todo+=("$s"); fi
+  done
+  set -- "${todo[@]+"${todo[@]}"}"
+  if [ "$#" = 0 ]; then return 0; fi
   for s in "$@"; do
     ( bash "scripts/build_$s.sh" >"$SC/$s.log" 2>&1; echo "$?" >"$SC/$s.status" ) &
     pids+=($!)
@@ -18,7 +34,11 @@ wave() {  # wave <name> <script...>
   local fail=0 failed=()
   for s in "$@"; do
     local rc; rc=$(cat "$SC/$s.status" 2>/dev/null || echo 1)
-    if [ "$rc" = 0 ]; then echo "  ok   $s"; else echo "  FAIL $s (rc=$rc, log: $SC/$s.log)"; fail=1; failed+=("$s"); fi
+    if [ "$rc" = 0 ]; then
+      echo "  ok   $s"
+      # Stamp only on success, so a failed dep is retried on the next run.
+      dep_hash "$s" > "$STAMPS/$s"
+    else echo "  FAIL $s (rc=$rc, log: $SC/$s.log)"; fail=1; failed+=("$s"); fi
   done
   if [ "$fail" != 0 ]; then
     # Dump the failing deps' logs so the error is visible in CI (the log files
