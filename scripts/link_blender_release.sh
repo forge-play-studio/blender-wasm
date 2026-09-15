@@ -115,7 +115,8 @@ WASMFS_INC="$ROOT/emsdk/upstream/emscripten/system/lib/wasmfs"
 #   * zlib / bzip2 / sqlite3 — emscripten PORTS. CPython was configured with
 #     -sUSE_ZLIB/-sUSE_BZIP2/-sUSE_SQLITE3, and a port is only linked when the
 #     flag is on the FINAL link too, not just on the objects that need it.
-# (The wgpu* warnings are benign: emdawnwebgpu supplies those from JS.)
+# (This block used to end with "the wgpu* warnings are benign". They were not;
+#  see WEBGPU_PORT below for what they actually meant.)
 MISSING_LIBS="-L$ROOT/wasm-sysroot/lib -lbrotlidec -lbrotlicommon \
   -sUSE_ZLIB=1 -sUSE_BZIP2=1 -sUSE_SQLITE3=1"
 
