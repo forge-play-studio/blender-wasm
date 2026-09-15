@@ -119,10 +119,23 @@ WASMFS_INC="$ROOT/emsdk/upstream/emscripten/system/lib/wasmfs"
 MISSING_LIBS="-L$ROOT/wasm-sysroot/lib -lbrotlidec -lbrotlicommon \
   -sUSE_ZLIB=1 -sUSE_BZIP2=1 -sUSE_SQLITE3=1"
 
+# WebGPU. blender/source/blender/gpu/CMakeLists.txt puts --use-port=emdawnwebgpu
+# on that module's COMPILES only, and says "the final-exe link adds --use-port via
+# CMAKE_EXE_LINKER_FLAGS" — nothing in this repo ever did. A port supplies its JS
+# library at LINK time, so without this the ~86 wgpu* symbols got emscripten's
+# "missing function" stubs instead of dawn's bindings, and every build died on the
+# first wgpuCreateInstance(). Reproduced locally with emcc 6.0.1: compile an object
+# with the port, then link
+#   without it -> 0 dawn bindings, stubs, 1 "undefined symbol" warning
+#   with it    -> 85 dawn bindings, no stubs, no warning
+# Every artifact this script has ever produced was broken this way; the only build
+# that ever ran in a browser was Puter's own prebuilt one.
+WEBGPU_PORT="--use-port=emdawnwebgpu"
+
 WEB_FLAGS="-pthread \
   -sEXIT_RUNTIME=0 -g2 \
   -O1 \
-  $MISSING_LIBS \
+  $MISSING_LIBS $WEBGPU_PORT \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=1073741824 -sMAXIMUM_MEMORY=4294967296 \
   -sSTACK_SIZE=16777216 -sDEFAULT_PTHREAD_STACK_SIZE=4194304 \
   -sPTHREAD_POOL_SIZE=32 -sPTHREAD_POOL_SIZE_STRICT=0 \
@@ -143,9 +156,12 @@ test "${PIPESTATUS[0]}" -eq 0 || { echo "!! link failed"; exit 1; }
 # The link runs with -sERROR_ON_UNDEFINED_SYMBOLS=0, so a missing library is a
 # WARNING here and an abort in the browser hours later ("missing function: X").
 # Fail the build instead, for everything that is not legitimately supplied by JS.
-#   wgpu*/emscripten_webgpu_* — emdawnwebgpu's JS bindings
-#   wasmfs_*                  — the demo backends, compiled into this very link
-BENIGN='^(wgpu|emscripten_webgpu_|wasmfs_)'
+# wgpu*/emscripten_webgpu_* used to be on this list as "emdawnwebgpu supplies
+# those from JS". That was the bug, not the exception: with the port on the link
+# they resolve, and the day they do not, the build must fail rather than ship a
+# Blender that aborts the moment it asks for a WebGPU instance.
+#   wasmfs_* — the demo backends, compiled into this very link
+BENIGN='^(wasmfs_)'
 UNRESOLVED=$(grep -oE "undefined symbol: [A-Za-z0-9_]+" "$LINK_LOG" \
   | sed 's/undefined symbol: //' | sort -u | grep -vE "$BENIGN" || true)
 rm -f "$LINK_LOG"
@@ -157,11 +173,30 @@ if [ -n "$UNRESOLVED" ]; then
 fi
 echo ">> no unresolved symbols beyond the JS-supplied ones"
 
+# Assert on the ARTIFACT, not only on the link log. A JS library is either merged
+# into blender.js or it is not, and that is checkable here in a second instead of
+# in a browser two hours later.
+if ! grep -q "emwgpuCreate" "$OUT/blender.js"; then
+  echo "!! blender.js carries no emdawnwebgpu bindings — WebGPU would abort at startup."
+  echo "!! (expected the emdawnwebgpu port's JS library to be merged by $WEBGPU_PORT)"
+  exit 1
+fi
+echo ">> emdawnwebgpu JS bindings present in blender.js"
+
 echo ">> blender.wasm.zst (zstd --ultra -21 -T0)"
 zstd -f --ultra -21 -T0 "$OUT/blender.wasm" -o "$OUT/blender.wasm.zst"
 rm -f "$OUT/blender.wasm"
 
-cp -f "$ROOT/web/wgsl-cache.json" "$OUT/wgsl-cache.json" 2>/dev/null || true
+# Pre-seeded WGSL translations. `|| true` here used to mean a missing cache was
+# published silently (the released artifact had no wgsl-cache.json at all while
+# the loader kept asking for it). Absent is survivable — it only costs first-run
+# shader translation time — but it must be SAID.
+if [ -f "$ROOT/web/wgsl-cache.json" ]; then
+  cp -f "$ROOT/web/wgsl-cache.json" "$OUT/wgsl-cache.json"
+  echo ">> wgsl-cache.json staged ($(wc -c <"$OUT/wgsl-cache.json") bytes)"
+else
+  echo "!! WARNING: $ROOT/web/wgsl-cache.json missing — shipping without the shader cache (slower first render)"
+fi
 
 # Manifest with decompressed sizes (zstddec wants explicit sizes).
 python3 - "$OUT" <<'PYEOF'

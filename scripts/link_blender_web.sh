@@ -73,7 +73,11 @@ cmd=${cmd//-sNODERAWFS=1/}
 # export (static ctors, html5 event callbacks, main-loop ticks) throws
 # SuspendError on the first exception-guarded call. Select readback needs a
 # different design (CPU raycast fallback or cached async readback).
-WEB_FLAGS="-pthread \
+# Same link-time port the release script needs — gpu/CMakeLists puts
+# --use-port=emdawnwebgpu on that module's COMPILES only, and a port supplies its
+# JS library at LINK time. Without it the wgpu* symbols become "missing function"
+# stubs and Blender aborts on the first wgpuCreateInstance().
+WEB_FLAGS="--use-port=emdawnwebgpu -pthread \
   -sEXIT_RUNTIME=0 -g2 \
   -O1 \
   -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=1073741824 -sMAXIMUM_MEMORY=4294967296 \
