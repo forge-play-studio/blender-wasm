@@ -12,9 +12,29 @@ SC="${SC:-/tmp/blender-wasm-deplogs}"; mkdir -p "$SC"
 # there, so touching it must rebuild everything). DEPS_FORCE=1 ignores stamps.
 STAMPS="${SYSROOT:-$PWD/wasm-sysroot}/.stamps"; mkdir -p "$STAMPS"
 dep_hash() { cat "scripts/build_$1.sh" scripts/dep_common.sh | sha256sum | cut -d' ' -f1; }
+
+# Not every dep ends up in the sysroot. These four leave the artifact Blender's
+# CMake actually links (or runs) in deps/build/, and CI caches the SYSROOT, not
+# deps/build — so a restored stamp is a claim about a file that is no longer
+# there. Believing it cost a build:
+#   ninja: error: '.../deps/build/spirv-tools/source/opt/libSPIRV-Tools-opt.a',
+#   needed by 'bin/blender.js', missing and no known rule to make it
+# A stamp must mean "the product exists AND the recipe is unchanged", never the
+# recipe alone. Checking one representative product per dep is enough: these
+# builds are all-or-nothing.
+dep_product() {
+  case "$1" in
+    spirv_tools) echo "$PWD/deps/build/spirv-tools/source/opt/libSPIRV-Tools-opt.a" ;;
+    tint)        echo "$PWD/deps/build/tint/src/tint/libtint_api.a" ;;
+    python)      echo "$PWD/deps/build/python-native/python" ;;
+    *)           echo "" ;;
+  esac
+}
 dep_is_current() {
   [ -z "${DEPS_FORCE:-}" ] || return 1
-  [ -f "$STAMPS/$1" ] && [ "$(cat "$STAMPS/$1")" = "$(dep_hash "$1")" ]
+  [ -f "$STAMPS/$1" ] && [ "$(cat "$STAMPS/$1")" = "$(dep_hash "$1")" ] || return 1
+  local product; product=$(dep_product "$1")
+  [ -z "$product" ] || [ -e "$product" ]
 }
 
 wave() {  # wave <name> <script...>
@@ -22,7 +42,15 @@ wave() {  # wave <name> <script...>
   echo "==== wave: $name ===="
   local pids=() s todo=()
   for s in "$@"; do
-    if dep_is_current "$s"; then echo "  skip $s (cached)"; else todo+=("$s"); fi
+    if dep_is_current "$s"; then
+      echo "  skip $s (cached)"
+    else
+      # Say WHY, so "the cache did nothing" is visible instead of inferred.
+      if [ -f "$STAMPS/$s" ] && [ "$(cat "$STAMPS/$s")" = "$(dep_hash "$s")" ]; then
+        echo "  build $s (stamped, but $(dep_product "$s") is missing)"
+      fi
+      todo+=("$s")
+    fi
   done
   set -- "${todo[@]+"${todo[@]}"}"
   if [ "$#" = 0 ]; then return 0; fi
